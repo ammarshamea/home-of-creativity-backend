@@ -1,0 +1,34 @@
+<?php
+
+namespace App\Actions;
+
+use App\Enums\RequestStatus;
+use App\Enums\WorkflowEventType;
+use App\Models\ServiceRequest;
+
+class DispatchStatusWorkflow
+{
+    public function __construct(private DispatchN8nEvent $dispatchN8nEvent) {}
+
+    public function handle(ServiceRequest $request, RequestStatus $status): void
+    {
+        $type = match ($status) {
+            RequestStatus::PaymentConfirmed => WorkflowEventType::PaymentConfirmed,
+            RequestStatus::ReadyForReview => WorkflowEventType::DeliveryReady,
+            RequestStatus::RevisionInProgress => WorkflowEventType::RevisionRequested,
+            RequestStatus::Completed => WorkflowEventType::ProjectCompleted,
+            default => null,
+        };
+
+        if (! $type) {
+            return;
+        }
+
+        defer(function () use ($request, $type): void {
+            $this->dispatchN8nEvent->handle(
+                $request->fresh(['client']) ?? $request,
+                $type,
+            );
+        });
+    }
+}

@@ -1,0 +1,71 @@
+{
+  "name": "HOC Request Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hoc-request",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-in",
+      "name": "Laravel Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "hoc-request"
+    },
+    {
+      "parameters": {
+        "functionCode": "const body = $json.body || $json;\nconst event = body.event;\nconst number = body.request_number;\nconst payload = body.payload || {};\n\nlet nextEvent = event;\nlet nextPayload = {};\n\nif (event === 'REQUEST_SUBMITTED') {\n  nextEvent = 'QUOTATION_READY';\n  nextPayload = {\n    odoo_partner_id: 'ODOO-PENDING',\n    odoo_quotation_id: 'Q-' + number,\n    ai_analysis: {\n      services: ['identity', 'digital'],\n      departments: ['brand', 'finance']\n    }\n  };\n}\n\nif (event === 'PAYMENT_CONFIRMED') {\n  nextEvent = 'TASKS_READY';\n  nextPayload = {\n    briefs: [\n      { department: 'brand', brief: payload.title || 'Brand execution', clickup_task_id: null },\n      { department: 'finance', brief: 'Track invoice and delivery', clickup_task_id: null }\n    ]\n  };\n}\n\nreturn [{ json: { event: nextEvent, request_number: number, payload: nextPayload } }];"
+      },
+      "id": "route-event",
+      "name": "Route Stage",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [260, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/webhooks/n8n",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "change-me"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "callback-laravel",
+      "name": "Update Laravel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 0]
+    }
+  ],
+  "connections": {
+    "Laravel Event": {
+      "main": [[{ "node": "Route Stage", "type": "main", "index": 0 }]]
+    },
+    "Route Stage": {
+      "main": [[{ "node": "Update Laravel", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
