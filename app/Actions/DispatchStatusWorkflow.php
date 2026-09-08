@@ -8,27 +8,21 @@ use App\Models\ServiceRequest;
 
 class DispatchStatusWorkflow
 {
-    public function __construct(private DispatchN8nEvent $dispatchN8nEvent) {}
+    public function __construct(private EnqueueIntegrationEvent $enqueueIntegrationEvent) {}
 
     public function handle(ServiceRequest $request, RequestStatus $status): void
     {
         $type = match ($status) {
-            RequestStatus::PaymentConfirmed => WorkflowEventType::PaymentConfirmed,
             RequestStatus::ReadyForReview => WorkflowEventType::DeliveryReady,
-            RequestStatus::RevisionInProgress => WorkflowEventType::RevisionRequested,
+            RequestStatus::RevisionRequested => WorkflowEventType::RevisionRequested,
             RequestStatus::Completed => WorkflowEventType::ProjectCompleted,
             default => null,
         };
 
-        if (! $type) {
+        if (! $type instanceof WorkflowEventType) {
             return;
         }
 
-        defer(function () use ($request, $type): void {
-            $this->dispatchN8nEvent->handle(
-                $request->fresh(['client']) ?? $request,
-                $type,
-            );
-        });
+        $this->enqueueIntegrationEvent->handle($request->fresh(['client']) ?? $request, $type);
     }
 }

@@ -10,6 +10,7 @@ class DepartmentBrief extends Model
     protected $fillable = [
         'request_id',
         'department',
+        'type',
         'brief',
         'clickup_task_id',
     ];

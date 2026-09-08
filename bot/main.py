@@ -1,19 +1,54 @@
+import base64
 import os
 from html import escape
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram.error import NetworkError, TimedOut
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+
+from telegram_http import run_application, telegram_request
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 load_dotenv()
 
-WAITING_TITLE, WAITING_BODY = range(2)
-_origin = os.environ.get("HOC_API_URL", "http://127.0.0.1:8000").rstrip("/")
+(
+    WAITING_TITLE,
+    WAITING_BODY,
+    WAITING_EDIT_TITLE,
+    WAITING_EDIT_BODY,
+    WAITING_REJECT_REASON,
+    WAITING_REVISION_REASON,
+    WAITING_SUPPORT,
+    WAITING_RECEIPT,
+) = range(8)
+
+_origin = (os.environ.get("HOC_API_URL") or "http://127.0.0.1:8000").rstrip("/")
+if "trycloudflare.com" in _origin:
+    _origin = "http://127.0.0.1:8000"
 API_URL = _origin if _origin.endswith("/api") else f"{_origin}/api"
 BOT_SECRET = os.environ.get("TELEGRAM_BOT_SECRET", "")
+BTN_NEW = "🆕 طلب جديد"
+BTN_MY = "📋 طلباتي"
+BTN_SUPPORT = "💬 دعم"
+BTN_SUBMIT = "✅ تم الإرسال"
+MAX_ATTACHMENTS = 5
+ALLOWED_ATTACHMENT_MIMES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "application/pdf",
+}
 
 
 def api_headers() -> dict[str, str]:
@@ -21,6 +56,97 @@ def api_headers() -> dict[str, str]:
         "Accept": "application/json",
         "X-Webhook-Secret": BOT_SECRET,
     }
+
+
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(BTN_NEW), KeyboardButton(BTN_MY)], [KeyboardButton(BTN_SUPPORT)]],
+        resize_keyboard=True,
+    )
+
+
+def body_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([[KeyboardButton(BTN_SUBMIT)]], resize_keyboard=True)
+
+
+async def download_message_attachment(message) -> dict[str, str] | None:
+    file_obj = None
+    file_name = "attachment"
+    mime_type = "application/octet-stream"
+
+    if message.photo:
+        file_obj = message.photo[-1]
+        file_name = "photo.jpg"
+        mime_type = "image/jpeg"
+    elif message.document:
+        file_obj = message.document
+        mime_type = file_obj.mime_type or "application/octet-stream"
+        if mime_type not in ALLOWED_ATTACHMENT_MIMES:
+            return None
+        file_name = file_obj.file_name or "attachment.pdf"
+    else:
+        return None
+
+    telegram_file = await file_obj.get_file()
+    content = await telegram_file.download_as_bytearray()
+    return {
+        "file_name": file_name,
+        "file_base64": base64.b64encode(bytes(content)).decode("ascii"),
+        "mime_type": mime_type,
+    }
+
+
+async def submit_new_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return ConversationHandler.END
+
+    description = (context.user_data.get("description") or "").strip()
+    attachments = context.user_data.get("attachments") or []
+    if not description and not attachments:
+        await message.reply_text(
+            "أرسل وصفاً أو مرفقاً واحداً على الأقل قبل الإرسال.",
+            reply_markup=body_keyboard(),
+        )
+        return WAITING_BODY
+
+    payload: dict[str, object] = {
+        "telegram_user_id": str(user.id),
+        "title": context.user_data.get("title", "طلب جديد"),
+        "description": description or "انظر المرفقات.",
+    }
+    if attachments:
+        payload["attachments"] = attachments
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{API_URL}/bot/telegram/requests",
+            headers=api_headers(),
+            json=payload,
+        )
+        if response.status_code >= 400:
+            detail = response.json().get("message", response.text)
+            await message.reply_text(
+                f"تعذر تسجيل الطلب: {escape(str(detail))}",
+                reply_markup=body_keyboard(),
+            )
+            return WAITING_BODY
+        result = response.json()["data"]
+
+    context.user_data.pop("attachments", None)
+    context.user_data.pop("description", None)
+    context.user_data.pop("title", None)
+
+    attachment_note = ""
+    if attachments:
+        attachment_note = f"\n📎 مرفقات: {len(attachments)}"
+
+    await message.reply_text(
+        f"تم تسجيل الطلب {escape(result['number'])}.{attachment_note}\nالحالة: {result['status']}",
+        reply_markup=main_keyboard(),
+    )
+    return ConversationHandler.END
 
 
 async def link_client(telegram_id: int, name: str) -> dict:
@@ -44,14 +170,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await link_client(user.id, user.full_name)
     await update.message.reply_text(
-        "تم إنشاء حسابك في Home of Creativity.\n"
-        "استخدم /new لإرسال طلب جديد."
+        "مرحباً في Home of Creativity.\nاختر من الأزرار أدناه:",
+        reply_markup=main_keyboard(),
     )
 
 
 async def new_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message is None:
         return ConversationHandler.END
+    context.user_data["attachments"] = []
+    context.user_data["description"] = ""
     await update.message.reply_text("ما عنوان الطلب؟")
     return WAITING_TITLE
 
@@ -60,37 +188,420 @@ async def capture_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if update.message is None or not update.message.text:
         return WAITING_TITLE
     context.user_data["title"] = update.message.text.strip()
-    await update.message.reply_text("صف المطلوب باختصار.")
+    context.user_data["attachments"] = []
+    context.user_data["description"] = ""
+    await update.message.reply_text(
+        "صف المطلوب.\n"
+        "يمكنك إرسال نص أو صور وملفات (JPG, PNG, PDF).\n"
+        "عند الانتهاء اضغط «✅ تم الإرسال».",
+        reply_markup=body_keyboard(),
+    )
     return WAITING_BODY
 
 
 async def capture_body(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    message = update.message
+    if message is None:
+        return WAITING_BODY
+
+    context.user_data.setdefault("attachments", [])
+
+    if message.text and message.text.strip() in {BTN_SUBMIT, "تم"}:
+        return await submit_new_request(update, context)
+
+    attachment = await download_message_attachment(message)
+    if attachment is not None:
+        attachments: list[dict[str, str]] = context.user_data["attachments"]
+        if len(attachments) >= MAX_ATTACHMENTS:
+            await message.reply_text(
+                f"الحد الأقصى {MAX_ATTACHMENTS} مرفقات.",
+                reply_markup=body_keyboard(),
+            )
+            return WAITING_BODY
+        attachments.append(attachment)
+        if message.caption:
+            context.user_data["description"] = message.caption.strip()
+        await message.reply_text(
+            f"تم استلام الملف ({len(attachments)}/{MAX_ATTACHMENTS}).\n"
+            "أرسل المزيد أو اضغط «✅ تم الإرسال».",
+            reply_markup=body_keyboard(),
+        )
+        return WAITING_BODY
+
+    if message.text:
+        context.user_data["description"] = message.text.strip()
+        await message.reply_text(
+            "تم حفظ الوصف. أرسل مرفقات إن وجدت، ثم اضغط «✅ تم الإرسال».",
+            reply_markup=body_keyboard(),
+        )
+        return WAITING_BODY
+
+    await message.reply_text(
+        "أرسل نصاً أو صورة/ملف PDF.",
+        reply_markup=body_keyboard(),
+    )
+    return WAITING_BODY
+
+
+async def list_requests(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if user is None or update.message is None:
+        return
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.get(
+            f"{API_URL}/bot/telegram/requests",
+            headers=api_headers(),
+            params={"telegram_user_id": str(user.id)},
+        )
+        response.raise_for_status()
+        items = response.json().get("data", [])
+
+    if not items:
+        await update.message.reply_text("لا توجد طلبات بعد.", reply_markup=main_keyboard())
+        return
+
+    lines = []
+    for item in items[:10]:
+        label = item.get("execution_status_label") or item.get("status")
+        lines.append(f"• {item['number']}: {item['title']} — {label}")
+        if item.get("can_edit"):
+            lines.append(f"  ✏️ للتعديل: /edit {item['number']}")
+
+    await update.message.reply_text("\n".join(lines), reply_markup=main_keyboard())
+
+
+async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message is None or update.effective_user is None:
+        return ConversationHandler.END
+    parts = (update.message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await update.message.reply_text("استخدم: /edit REQ-2026-000001")
+        return ConversationHandler.END
+    context.user_data["edit_number"] = parts[1].strip()
+    await update.message.reply_text("ما العنوان الجديد؟")
+    return WAITING_EDIT_TITLE
+
+
+async def capture_edit_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message is None or not update.message.text:
+        return WAITING_EDIT_TITLE
+    context.user_data["edit_title"] = update.message.text.strip()
+    await update.message.reply_text("ما الوصف الجديد؟")
+    return WAITING_EDIT_BODY
+
+
+async def capture_edit_body(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    if user is None or update.message is None or not update.message.text:
+        return ConversationHandler.END
+
+    number = context.user_data.get("edit_number")
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.patch(
+            f"{API_URL}/bot/telegram/requests/{number}",
+            headers=api_headers(),
+            json={
+                "telegram_user_id": str(user.id),
+                "title": context.user_data.get("edit_title"),
+                "description": update.message.text.strip(),
+            },
+        )
+        if response.status_code >= 400:
+            detail = response.json().get("message", response.text)
+            await update.message.reply_text(f"تعذر التعديل: {escape(str(detail))}", reply_markup=main_keyboard())
+            return ConversationHandler.END
+
+    await update.message.reply_text(f"تم تحديث {escape(number)}.", reply_markup=main_keyboard())
+    return ConversationHandler.END
+
+
+async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message is None:
+        return ConversationHandler.END
+    await update.message.reply_text("اكتب رسالة الدعم. يمكنك ذكر رقم الطلب في النص.")
+    return WAITING_SUPPORT
+
+
+async def capture_support(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     if user is None or update.message is None or not update.message.text:
         return ConversationHandler.END
 
     async with httpx.AsyncClient(timeout=12) as client:
-        response = await client.post(
-            f"{API_URL}/bot/telegram/requests",
+        await client.post(
+            f"{API_URL}/bot/telegram/support",
             headers=api_headers(),
             json={
                 "telegram_user_id": str(user.id),
-                "title": context.user_data.get("title", "طلب جديد"),
-                "description": update.message.text.strip(),
+                "message": update.message.text.strip(),
             },
         )
-        response.raise_for_status()
-        payload = response.json()["data"]
+
+    await update.message.reply_text("تم إرسال رسالة الدعم.", reply_markup=main_keyboard())
+    return ConversationHandler.END
+
+
+def parse_callback(data: str) -> tuple[str, str]:
+    action, _, ref = data.partition(":")
+    return action, ref
+
+
+async def api_error_alert(query, response: httpx.Response) -> None:
+    try:
+        detail = response.json().get("message", response.text)
+    except Exception:
+        detail = response.text or f"HTTP {response.status_code}"
+    await query.answer(str(detail)[:200], show_alert=True)
+
+
+async def client_request_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+    await query.answer()
+
+    action, number = parse_callback(query.data)
+    user = query.from_user
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        if action == "reqack":
+            response = await client.post(
+                f"{API_URL}/bot/telegram/requests/{number}/acknowledge",
+                headers=api_headers(),
+                json={"telegram_user_id": str(user.id)},
+            )
+            if response.status_code < 400:
+                await query.edit_message_reply_markup(reply_markup=None)
+                await query.message.reply_text(
+                    f"شكراً! تم تأكيد اهتمامك بالطلب #{escape(number)}.",
+                    reply_markup=main_keyboard(),
+                )
+            else:
+                await api_error_alert(query, response)
+            return
+
+        if action == "reqcancel":
+            response = await client.post(
+                f"{API_URL}/bot/telegram/requests/{number}/cancel",
+                headers=api_headers(),
+                json={"telegram_user_id": str(user.id)},
+            )
+            if response.status_code < 400:
+                await query.edit_message_reply_markup(reply_markup=None)
+                await query.message.reply_text(
+                    f"تم إلغاء الطلب #{escape(number)}.",
+                    reply_markup=main_keyboard(),
+                )
+            else:
+                await api_error_alert(query, response)
+            return
+
+        if action == "complete":
+            response = await client.post(
+                f"{API_URL}/bot/telegram/requests/{number}/complete",
+                headers=api_headers(),
+                json={"telegram_user_id": str(user.id)},
+            )
+            if response.status_code < 400:
+                await query.edit_message_reply_markup(reply_markup=None)
+                await query.message.reply_text(
+                    f"تم اعتماد تسليم الطلب #{escape(number)}. شكراً لك!",
+                    reply_markup=main_keyboard(),
+                )
+            else:
+                await api_error_alert(query, response)
+            return
+
+        if action == "revision":
+            context.user_data["revision_number"] = number
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("ما التعديل المطلوب؟")
+            return
+
+        if action == "receipt_hint":
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text(
+                f"أرسل صورة أو PDF لوصل الدفع للطلب #{escape(number)}.",
+                reply_markup=main_keyboard(),
+            )
+            return
+
+
+async def quotation_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+    await query.answer()
+
+    action, number = parse_callback(query.data)
+    user = query.from_user
+    async with httpx.AsyncClient(timeout=12) as client:
+        if action == "approve":
+            response = await client.post(
+                f"{API_URL}/bot/telegram/requests/{number}/approve",
+                headers=api_headers(),
+                json={"telegram_user_id": str(user.id)},
+            )
+            if response.status_code < 400:
+                await query.edit_message_reply_markup(reply_markup=None)
+                await query.message.reply_text(
+                    f"تمت الموافقة على عرض السعر للطلب #{escape(number)}.\n"
+                    "يمكنك إرسال وصل الدفع كصورة أو PDF، أو انتظر تأكيد الدفع النقدي من الإدارة.",
+                    reply_markup=main_keyboard(),
+                )
+            else:
+                await api_error_alert(query, response)
+            return
+
+        if action == "reject":
+            context.user_data["reject_number"] = number
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("ما سبب الرفض؟")
+            return
+
+
+async def capture_revision_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if user is None or update.message is None or not update.message.text:
+        return
+
+    number = context.user_data.pop("revision_number", None)
+    if not number:
+        return
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.post(
+            f"{API_URL}/bot/telegram/requests/{number}/revision",
+            headers=api_headers(),
+            json={
+                "telegram_user_id": str(user.id),
+                "reason": update.message.text.strip(),
+            },
+        )
+        if response.status_code >= 400:
+            context.user_data["revision_number"] = number
+            await update.message.reply_text("تعذر تسجيل طلب التعديل.", reply_markup=main_keyboard())
+            return
 
     await update.message.reply_text(
-        f"تم تسجيل الطلب {escape(payload['number'])}.\nالحالة: {payload['status']}"
+        f"تم تسجيل طلب التعديل للطلب #{escape(number)}.",
+        reply_markup=main_keyboard(),
     )
-    return ConversationHandler.END
+
+
+async def capture_reject_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if user is None or update.message is None or not update.message.text:
+        return
+
+    number = context.user_data.pop("reject_number", None)
+    if not number:
+        return
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.post(
+            f"{API_URL}/bot/telegram/requests/{number}/reject",
+            headers=api_headers(),
+            json={
+                "telegram_user_id": str(user.id),
+                "reason": update.message.text.strip(),
+            },
+        )
+        if response.status_code >= 400:
+            context.user_data["reject_number"] = number
+            await update.message.reply_text("تعذر تسجيل الرفض.", reply_markup=main_keyboard())
+            return
+
+    await update.message.reply_text(
+        f"تم تسجيل رفض عرض السعر للطلب #{escape(number)}.",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def pending_callback_followup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.user_data.get("reject_number"):
+        await capture_reject_reason(update, context)
+        return
+    if context.user_data.get("revision_number"):
+        await capture_revision_reason(update, context)
+
+
+async def upload_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+
+    file_obj = None
+    file_name = "receipt"
+    mime_type = "application/octet-stream"
+    if message.photo:
+        file_obj = message.photo[-1]
+        file_name = "receipt.jpg"
+        mime_type = "image/jpeg"
+    elif message.document:
+        file_obj = message.document
+        file_name = file_obj.file_name or "receipt.pdf"
+        mime_type = file_obj.mime_type or "application/octet-stream"
+    else:
+        return
+
+    telegram_file = await file_obj.get_file()
+    content = await telegram_file.download_as_bytearray()
+    encoded = base64.b64encode(bytes(content)).decode("ascii")
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        requests_resp = await client.get(
+            f"{API_URL}/bot/telegram/requests",
+            headers=api_headers(),
+            params={"telegram_user_id": str(user.id)},
+        )
+        requests_resp.raise_for_status()
+        items = requests_resp.json().get("data", [])
+        awaiting = next((i for i in items if i.get("status") == "awaiting_payment"), None)
+        if not awaiting:
+            await message.reply_text("لا يوجد طلب بانتظار الدفع.", reply_markup=main_keyboard())
+            return
+
+        response = await client.post(
+            f"{API_URL}/bot/telegram/requests/{awaiting['number']}/receipt",
+            headers=api_headers(),
+            json={
+                "telegram_user_id": str(user.id),
+                "file_name": file_name,
+                "file_base64": encoded,
+                "mime_type": mime_type,
+            },
+        )
+        if response.status_code >= 400:
+            detail = response.json().get("message", response.text)
+            await message.reply_text(f"تعذر رفع الوصل: {escape(str(detail))}", reply_markup=main_keyboard())
+            return
+
+    await message.reply_text(
+        f"تم استلام وصل الدفع للطلب {awaiting['number']}. سيتم مراجعته من الإدارة.",
+        reply_markup=main_keyboard(),
+    )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message:
-        await update.message.reply_text("تم إلغاء الطلب.")
+        await update.message.reply_text("تم الإلغاء.", reply_markup=main_keyboard())
+    return ConversationHandler.END
+
+
+async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message is None or not update.message.text:
+        return ConversationHandler.END
+    text = update.message.text.strip()
+    if text == BTN_NEW:
+        return await new_request(update, context)
+    if text == BTN_MY:
+        await list_requests(update, context)
+        return ConversationHandler.END
+    if text == BTN_SUPPORT:
+        return await support_start(update, context)
     return ConversationHandler.END
 
 
@@ -99,19 +610,71 @@ def main() -> None:
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing.")
 
-    application = Application.builder().token(token).build()
+    application = (
+        Application.builder()
+        .token(token)
+        .request(telegram_request())
+        .get_updates_request(telegram_request(long_polling=True))
+        .build()
+    )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(
+        CallbackQueryHandler(
+            client_request_action,
+            pattern=r"^(reqack|reqcancel|complete|revision|receipt_hint):",
+        ),
+        group=-1,
+    )
+    application.add_handler(
+        CallbackQueryHandler(quotation_action, pattern=r"^(approve|reject):"),
+        group=-1,
+    )
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, pending_callback_followup, block=False),
+        group=-1,
+    )
+    application.add_handler(
         ConversationHandler(
-            entry_points=[CommandHandler("new", new_request)],
+            entry_points=[
+                CommandHandler("new", new_request),
+                MessageHandler(filters.Regex(f"^{BTN_NEW}$"), new_request),
+                MessageHandler(filters.Regex(f"^{BTN_SUPPORT}$"), support_start),
+            ],
             states={
                 WAITING_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_title)],
-                WAITING_BODY: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_body)],
+                WAITING_BODY: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, capture_body),
+                    MessageHandler(filters.PHOTO | filters.Document.ALL, capture_body),
+                ],
+                WAITING_SUPPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_support)],
             },
             fallbacks=[CommandHandler("cancel", cancel)],
         )
     )
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, upload_receipt), group=1)
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CommandHandler("edit", edit_start)],
+            states={
+                WAITING_EDIT_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_edit_title)],
+                WAITING_EDIT_BODY: [MessageHandler(filters.TEXT & ~filters.COMMAND, capture_edit_body)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)],
+        )
+    )
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
+
+    try:
+        run_application(
+            application,
+            port=8445,
+            url_path="client-bot",
+            secret_token=BOT_SECRET,
+        )
+    except TimedOut as exc:
+        raise SystemExit("انتهت مهلة الاتصال بـ api.telegram.org.") from exc
+    except NetworkError as exc:
+        raise SystemExit(f"تعذر الوصول إلى api.telegram.org ({exc}).") from exc
 
 
 if __name__ == "__main__":

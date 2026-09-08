@@ -62,8 +62,27 @@ return [
 
     'clickup' => [
         'token' => env('CLICKUP_TOKEN'),
+        'space_id' => env('CLICKUP_SPACE_ID'),
         'list_id' => env('CLICKUP_LIST_ID'),
+        'lists' => [
+            'sales' => env('CLICKUP_LIST_SALES', env('CLICKUP_LIST_ID')),
+            'photography' => env('CLICKUP_LIST_PHOTOGRAPHY'),
+            'content' => env('CLICKUP_LIST_CONTENT'),
+            'design' => env('CLICKUP_LIST_DESIGN'),
+        ],
         'timeout' => (int) env('CLICKUP_TIMEOUT', 12),
+        'statuses' => [
+            'progress' => env('CLICKUP_STATUS_PROGRESS', 'in progress'),
+            'review' => env('CLICKUP_STATUS_REVIEW', 'review'),
+            'complete' => env('CLICKUP_STATUS_COMPLETE', 'complete'),
+            'cancelled' => env('CLICKUP_STATUS_CANCELLED', 'canceled'),
+        ],
+    ],
+
+    'gemini' => [
+        'api_key' => env('GOOGLE_API_KEY'),
+        'model' => env('GEMINI_MODEL', 'gemini-2.5-flash'),
+        'timeout' => (int) env('GEMINI_TIMEOUT', 30),
     ],
 
 ];

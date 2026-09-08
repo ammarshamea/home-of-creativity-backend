@@ -4,24 +4,40 @@ namespace App\Enums;
 
 enum RequestStatus: string
 {
-    case Draft = 'draft';
     case Submitted = 'submitted';
-    case AiAnalyzing = 'ai_analyzing';
     case QuotationSent = 'quotation_sent';
+    case QuotationRejected = 'quotation_rejected';
+    case AwaitingPayment = 'awaiting_payment';
     case PaymentConfirmed = 'payment_confirmed';
     case InProgress = 'in_progress';
     case ReadyForReview = 'ready_for_review';
-    case RevisionInProgress = 'revision_in_progress';
-    case Approved = 'approved';
+    case RevisionRequested = 'revision_requested';
     case Completed = 'completed';
     case Cancelled = 'cancelled';
 
-    public function allowsStaffTransitionTo(self $next): bool
+    /** @return list<self> */
+    public function allowedTransitions(): array
     {
-        if ($next === self::PaymentConfirmed) {
-            return $this === self::QuotationSent;
-        }
+        return match ($this) {
+            self::Submitted => [self::QuotationSent, self::Cancelled],
+            self::QuotationSent => [self::QuotationRejected, self::AwaitingPayment, self::Cancelled],
+            self::QuotationRejected => [self::QuotationSent, self::Cancelled],
+            self::AwaitingPayment => [self::PaymentConfirmed, self::Cancelled],
+            self::PaymentConfirmed => [self::InProgress, self::Cancelled],
+            self::InProgress => [self::ReadyForReview, self::Cancelled],
+            self::ReadyForReview => [self::Completed, self::RevisionRequested, self::Cancelled],
+            self::RevisionRequested => [self::InProgress, self::ReadyForReview, self::Cancelled],
+            self::Completed, self::Cancelled => [],
+        };
+    }
 
-        return true;
+    public function canTransitionTo(self $next): bool
+    {
+        return in_array($next, $this->allowedTransitions(), true);
+    }
+
+    public function allowsClientEdit(): bool
+    {
+        return $this === self::Submitted;
     }
 }

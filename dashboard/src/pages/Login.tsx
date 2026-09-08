@@ -69,6 +69,11 @@ export function Login({
         <button className="btn btn-primary" type="submit">
           {t(copy.submit)}
         </button>
+        {import.meta.env.VITE_TELEGRAM_STAFF_BOT ? (
+          <a className="btn btn-telegram" href={`https://t.me/${import.meta.env.VITE_TELEGRAM_STAFF_BOT}`} target="_blank" rel="noreferrer">
+            {t(copy.openStaffBot)}
+          </a>
+        ) : null}
       </form>
     </main>
   );

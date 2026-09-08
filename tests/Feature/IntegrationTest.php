@@ -63,8 +63,10 @@ class IntegrationTest extends TestCase
         Http::fake([
             'https://odoo.test/jsonrpc' => Http::sequence()
                 ->push(['jsonrpc' => '2.0', 'id' => 1, 'result' => 2], 200)
-                ->push(['jsonrpc' => '2.0', 'id' => 2, 'result' => 44], 200)
-                ->push(['jsonrpc' => '2.0', 'id' => 3, 'result' => 88], 200),
+                ->push(['jsonrpc' => '2.0', 'id' => 2, 'result' => []], 200)
+                ->push(['jsonrpc' => '2.0', 'id' => 3, 'result' => 44], 200)
+                ->push(['jsonrpc' => '2.0', 'id' => 4, 'result' => 2], 200)
+                ->push(['jsonrpc' => '2.0', 'id' => 5, 'result' => 88], 200),
         ]);
 
         $number = $this->createTelegramRequest();
@@ -78,7 +80,7 @@ class IntegrationTest extends TestCase
             ->assertJsonPath('data.odoo_partner_id', '44')
             ->assertJsonPath('data.odoo_quotation_id', '88');
 
-        Http::assertSentCount(3);
+        Http::assertSentCount(5);
     }
 
     public function test_clickup_tasks_are_created_per_department(): void
@@ -87,6 +89,10 @@ class IntegrationTest extends TestCase
         config([
             'services.clickup.token' => 'pk_test',
             'services.clickup.list_id' => '12345',
+            'services.clickup.lists.sales' => '12345',
+            'services.clickup.lists.design' => '12345',
+            'services.clickup.lists.content' => '12345',
+            'services.clickup.lists.photography' => '12345',
         ]);
 
         Http::fake([

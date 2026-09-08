@@ -2,7 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\ServiceRequest;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 
 class TelegramNotifier
@@ -21,16 +24,123 @@ class TelegramNotifier
 
         $response = Http::timeout(10)
             ->connectTimeout(3)
-            ->retry([200, 500])
+            ->retry(2, 200)
             ->acceptJson()
             ->post("https://api.telegram.org/bot{$token}/sendMessage", [
                 'chat_id' => $chatId,
                 'text' => $text,
-            ])
-            ->throw();
+            ]);
 
-        if ($response->json('ok') !== true) {
+        if (! $response->successful() || $response->json('ok') !== true) {
             throw new RuntimeException('Telegram did not accept the message.');
+        }
+    }
+
+    public function sendDocument(string $chatId, string $absolutePath, ?string $caption = null, string $bot = 'client'): ?string
+    {
+        $token = $this->token($bot);
+        if ($token === '') {
+            throw new RuntimeException('Telegram bot is not configured.');
+        }
+
+        if (! is_file($absolutePath)) {
+            throw new RuntimeException('Document file not found.');
+        }
+
+        $response = Http::timeout(30)
+            ->connectTimeout(5)
+            ->attach('document', fopen($absolutePath, 'r'), basename($absolutePath))
+            ->post("https://api.telegram.org/bot{$token}/sendDocument", array_filter([
+                'chat_id' => $chatId,
+                'caption' => $caption,
+            ]));
+
+        if (! $response->successful() || $response->json('ok') !== true) {
+            Log::warning('Telegram document send failed.', ['body' => $response->body()]);
+
+            throw new RuntimeException('Telegram did not accept the document.');
+        }
+
+        return data_get($response->json(), 'result.document.file_id');
+    }
+
+    public function sendPhoto(string $chatId, string $absolutePath, ?string $caption = null, string $bot = 'client'): ?string
+    {
+        $token = $this->token($bot);
+        if ($token === '') {
+            throw new RuntimeException('Telegram bot is not configured.');
+        }
+
+        if (! is_file($absolutePath)) {
+            throw new RuntimeException('Photo file not found.');
+        }
+
+        $response = Http::timeout(30)
+            ->connectTimeout(5)
+            ->attach('photo', fopen($absolutePath, 'r'), basename($absolutePath))
+            ->post("https://api.telegram.org/bot{$token}/sendPhoto", array_filter([
+                'chat_id' => $chatId,
+                'caption' => $caption,
+            ]));
+
+        if (! $response->successful() || $response->json('ok') !== true) {
+            Log::warning('Telegram photo send failed.', ['body' => $response->body()]);
+
+            throw new RuntimeException('Telegram did not accept the photo.');
+        }
+
+        $photoSizes = data_get($response->json(), 'result.photo');
+        if (! is_array($photoSizes) || $photoSizes === []) {
+            return null;
+        }
+
+        $largest = end($photoSizes);
+
+        return is_array($largest) ? ($largest['file_id'] ?? null) : null;
+    }
+
+    public function sendFile(string $chatId, string $absolutePath, string $mimeType, ?string $caption = null, string $bot = 'client'): ?string
+    {
+        if (str_starts_with($mimeType, 'image/')) {
+            return $this->sendPhoto($chatId, $absolutePath, $caption, $bot);
+        }
+
+        return $this->sendDocument($chatId, $absolutePath, $caption, $bot);
+    }
+
+    public function sendStoredDocument(ServiceRequest $request, string $relativePath, ?string $caption = null): ?string
+    {
+        $chatId = $request->client?->telegram_user_id;
+        if (! filled($chatId)) {
+            return null;
+        }
+
+        $absolute = Storage::disk('local')->path($relativePath);
+
+        return $this->sendDocument((string) $chatId, $absolute, $caption, 'client');
+    }
+
+    public function sendInlineActions(string $chatId, string $text, array $buttons, string $bot = 'client'): void
+    {
+        $token = $this->token($bot);
+        if ($token === '') {
+            throw new RuntimeException('Telegram bot is not configured.');
+        }
+
+        $response = Http::timeout(10)
+            ->connectTimeout(3)
+            ->retry(2, 200)
+            ->acceptJson()
+            ->post("https://api.telegram.org/bot{$token}/sendMessage", [
+                'chat_id' => $chatId,
+                'text' => $text,
+                'reply_markup' => [
+                    'inline_keyboard' => [$buttons],
+                ],
+            ]);
+
+        if (! $response->successful() || $response->json('ok') !== true) {
+            throw new RuntimeException('Telegram did not accept the inline message.');
         }
     }
 

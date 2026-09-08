@@ -7,42 +7,117 @@ use App\Enums\RequestSource;
 use App\Enums\RequestStatus;
 use App\Enums\WorkflowEventType;
 use App\Models\Client;
+use App\Models\RequestStatusHistory;
 use App\Models\ServiceRequest;
+use App\Support\ResolveServiceRequest;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class SubmitServiceRequest
 {
     public function __construct(
         private GenerateRequestNumber $generateRequestNumber,
-        private DispatchN8nEvent $dispatchN8nEvent,
+        private EnqueueIntegrationEvent $enqueueIntegrationEvent,
         private NotifyEmployees $notifyEmployees,
+        private StoreRequestAttachments $storeRequestAttachments,
+        private ProvisionSalesClickUpTask $provisionSalesClickUpTask,
     ) {}
 
     /**
-     * @param  array{title: string, description: string, source?: RequestSource}  $data
+     * @param  array{
+     *     title: string,
+     *     description: string,
+     *     source?: RequestSource,
+     *     attachments?: list<array{file_name: string, file_base64: string, mime_type?: string|null}>
+     * }  $data
      */
     public function handle(Client $client, array $data): ServiceRequest
     {
-        $request = $client->requests()->create([
-            'number' => $this->generateRequestNumber->handle(),
-            'title' => $data['title'],
-            'description' => $data['description'],
-            'status' => RequestStatus::Submitted,
-            'source' => $data['source'] ?? RequestSource::Website,
-        ]);
+        return DB::transaction(function () use ($client, $data): ServiceRequest {
+            $request = $client->requests()->create([
+                'number' => $this->generateRequestNumber->handle(),
+                'title' => $data['title'],
+                'description' => $data['description'],
+                'status' => RequestStatus::Submitted,
+                'source' => $data['source'] ?? RequestSource::Website,
+            ]);
 
-        defer(function () use ($request): void {
-            $fresh = $request->fresh(['client']) ?? $request;
+            RequestStatusHistory::query()->create([
+                'request_id' => $request->id,
+                'from_status' => null,
+                'to_status' => RequestStatus::Submitted->value,
+                'actor' => 'client',
+                'note' => 'Request submitted.',
+            ]);
+
+            if (! empty($data['attachments'])) {
+                $this->storeRequestAttachments->handle($request, $data['attachments']);
+            }
+
+            $fresh = $request->fresh(['client', 'files']) ?? $request;
+
+            $displayNumber = ResolveServiceRequest::displayNumber($fresh);
+            $attachmentCount = $fresh->files?->count() ?? 0;
+            $attachmentLine = $attachmentCount > 0
+                ? "\n📎 مرفقات: {$attachmentCount}"
+                : '';
+
             $this->notifyEmployees->handle(
                 $fresh,
                 EmployeeProfession::Sales,
-                "طلب جديد لقسم المبيعات\n{$fresh->number}\n{$fresh->client?->name}: {$fresh->title}\n\n{$fresh->description}\n\nللرد على الزبون: /reply {$fresh->number}",
+                "طلب جديد لقسم المبيعات\n#{$displayNumber} — {$fresh->title}\n{$fresh->client?->name}\n\n{$fresh->description}{$attachmentLine}\n\nللرد: /reply",
+                [
+                    ['text' => "💬 رد على #{$displayNumber}", 'callback_data' => "rsel:{$displayNumber}"],
+                ],
             );
-            $this->dispatchN8nEvent->handle(
+
+            $this->notifySalesAttachments($fresh, $displayNumber);
+
+            $fresh = $this->provisionSalesClickUpTask->handle($fresh)->fresh(['client', 'files', 'clickupTasks']) ?? $fresh;
+
+            $this->enqueueIntegrationEvent->handle(
                 $fresh,
                 WorkflowEventType::RequestSubmitted,
             );
-        });
 
-        return $request->load(['client', 'events']);
+            return $fresh->fresh(['client', 'events', 'files', 'clickupTasks']) ?? $fresh;
+        });
+    }
+
+    private function notifySalesAttachments(ServiceRequest $request, string $displayNumber): void
+    {
+        foreach ($request->files->where('kind', 'brief_attachment') as $file) {
+            if (! filled($file->path)) {
+                continue;
+            }
+
+            $path = Storage::disk('local')->path($file->path);
+            if (! is_file($path)) {
+                continue;
+            }
+
+            $this->notifyEmployees->handle(
+                $request,
+                EmployeeProfession::Sales,
+                "📎 مرفق من الزبون — #{$displayNumber}\n{$file->original_name}",
+                null,
+                [
+                    'path' => $path,
+                    'mime' => $this->guessMimeType($file->original_name),
+                    'name' => $file->original_name,
+                ],
+            );
+        }
+    }
+
+    private function guessMimeType(string $filename): string
+    {
+        return match (strtolower(pathinfo($filename, PATHINFO_EXTENSION))) {
+            'jpg', 'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'pdf' => 'application/pdf',
+            default => 'application/octet-stream',
+        };
     }
 }

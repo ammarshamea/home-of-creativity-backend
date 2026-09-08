@@ -43,5 +43,6 @@
         <env name="ODOO_ENABLED" value="false"/>
         <env name="ODOO_URL" value=""/>
         <env name="CLICKUP_TOKEN" value=""/>
+        <env name="GOOGLE_API_KEY" value="test-key"/>
     </php>
 </phpunit>

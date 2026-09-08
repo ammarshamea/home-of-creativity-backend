@@ -21,15 +21,10 @@ class OdooClient
      */
     public function createQuotation(string $partnerName, ?string $email, ?string $phone, string $requestNumber, string $title): array
     {
+        $partnerId = $this->createOrReusePartner($partnerName, $email, $phone, $requestNumber);
         $uid = $this->authenticate();
-        $partnerId = $this->execute($uid, 'res.partner', 'create', [[
-            'name' => $partnerName,
-            'email' => $email,
-            'phone' => $phone,
-            'comment' => 'HOC '.$requestNumber,
-        ]]);
         $orderId = $this->execute($uid, 'sale.order', 'create', [[
-            'partner_id' => $partnerId,
+            'partner_id' => (int) $partnerId,
             'client_order_ref' => $requestNumber,
             'origin' => $requestNumber,
             'note' => $title,
@@ -39,6 +34,27 @@ class OdooClient
             'odoo_partner_id' => (string) $partnerId,
             'odoo_quotation_id' => (string) $orderId,
         ];
+    }
+
+    public function createOrReusePartner(string $partnerName, ?string $email, ?string $phone, string $requestNumber): string
+    {
+        $uid = $this->authenticate();
+
+        if (filled($email)) {
+            $existing = $this->execute($uid, 'res.partner', 'search', [[['email', '=', $email]], 0, 1]);
+            if (is_array($existing) && isset($existing[0])) {
+                return (string) $existing[0];
+            }
+        }
+
+        $partnerId = $this->execute($uid, 'res.partner', 'create', [[
+            'name' => $partnerName,
+            'email' => $email,
+            'phone' => $phone,
+            'comment' => 'HOC '.$requestNumber,
+        ]]);
+
+        return (string) $partnerId;
     }
 
     public function createInvoice(string $partnerId, string $requestNumber, ?string $quotationId = null): string

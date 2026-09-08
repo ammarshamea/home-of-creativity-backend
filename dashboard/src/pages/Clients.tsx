@@ -1,20 +1,30 @@
 import { useEffect, useState } from "react";
-import { api, type Client } from "../api";
+import { api, type Client, type PageMeta } from "../api";
+import { Pagination } from "../components/Pagination";
 import { copy, type Locale } from "../i18n";
 
 const TELEGRAM_BOT = import.meta.env.VITE_TELEGRAM_BOT ?? "pro_design_perfect_bot";
 
 export function Clients({ t }: { locale: Locale; t: (c: { ar: string; en: string }) => string }) {
   const [items, setItems] = useState<Client[]>([]);
+  const [meta, setMeta] = useState<PageMeta | null>(null);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
     api
-      .clients()
-      .then((res) => setItems(res.data))
-      .catch(() => setItems([]))
+      .clients(page)
+      .then((res) => {
+        setItems(res.data);
+        setMeta(res.meta);
+      })
+      .catch(() => {
+        setItems([]);
+        setMeta(null);
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [page]);
 
   return (
     <>
@@ -70,6 +80,7 @@ export function Clients({ t }: { locale: Locale; t: (c: { ar: string; en: string
           </tbody>
         </table>
       </div>
+      <Pagination meta={meta} disabled={loading} onPage={setPage} t={t} />
     </>
   );
 }

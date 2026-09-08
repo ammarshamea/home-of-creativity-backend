@@ -18,7 +18,7 @@ class StaffReplyRequest extends FormRequest
     {
         return [
             'telegram_user_id' => ['required', 'string', 'max:80'],
-            'request_number' => ['required', 'string', 'exists:requests,number'],
+            'request_number' => ['required', 'string', 'max:50'],
             'text' => ['required', 'string', 'max:4000'],
         ];
     }

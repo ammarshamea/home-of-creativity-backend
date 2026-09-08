@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Enums\EmployeeProfession;
+use App\Enums\EmployeeStatus;
 use App\Enums\RequestSource;
 use App\Enums\RequestStatus;
 use App\Models\Client;
@@ -67,6 +68,7 @@ class DatabaseSeeder extends Seeder
                 'name' => 'Sales Desk',
                 'phone' => '+963 000 000 000',
                 'profession' => EmployeeProfession::Sales,
+                'status' => EmployeeStatus::Approved,
                 'notes' => 'Receives new client requests.',
                 'is_active' => true,
             ],

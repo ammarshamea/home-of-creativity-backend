@@ -1,21 +1,30 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type ServiceRequest } from "../api";
+import { api, type PageMeta, type ServiceRequest } from "../api";
+import { Pagination } from "../components/Pagination";
 import { copy, sources, statuses, type Locale } from "../i18n";
 
 export function Requests({ t }: { locale: Locale; t: (c: { ar: string; en: string }) => string }) {
   const [items, setItems] = useState<ServiceRequest[]>([]);
+  const [meta, setMeta] = useState<PageMeta | null>(null);
   const [status, setStatus] = useState("");
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
     api
-      .requests(status || undefined)
-      .then((res) => setItems(res.data))
-      .catch(() => setItems([]))
+      .requests(status || undefined, page)
+      .then((res) => {
+        setItems(res.data);
+        setMeta(res.meta);
+      })
+      .catch(() => {
+        setItems([]);
+        setMeta(null);
+      })
       .finally(() => setLoading(false));
-  }, [status]);
+  }, [status, page]);
 
   return (
     <>
@@ -34,7 +43,10 @@ export function Requests({ t }: { locale: Locale; t: (c: { ar: string; en: strin
           id="request-status-filter"
           className="field"
           value={status}
-          onChange={(e) => setStatus(e.target.value)}
+          onChange={(e) => {
+            setPage(1);
+            setStatus(e.target.value);
+          }}
         >
           <option value="">{t(copy.all)}</option>
           {Object.entries(statuses).map(([key, label]) => (
@@ -90,6 +102,7 @@ export function Requests({ t }: { locale: Locale; t: (c: { ar: string; en: strin
           </tbody>
         </table>
       </div>
+      <Pagination meta={meta} disabled={loading} onPage={setPage} t={t} />
     </>
   );
 }

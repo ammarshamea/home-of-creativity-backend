@@ -6,7 +6,6 @@ use App\Enums\RequestStatus;
 use App\Models\ServiceRequest;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
-use Illuminate\Validation\Validator;
 
 class UpdateServiceRequestStatusRequest extends FormRequest
 {
@@ -25,27 +24,26 @@ class UpdateServiceRequestStatusRequest extends FormRequest
         ];
     }
 
-    /**
-     * @return array<int, callable(Validator): void>
-     */
-    public function after(): array
+    public function withValidator($validator): void
     {
-        return [
-            function (Validator $validator): void {
-                $serviceRequest = $this->route('service_request');
-                $next = RequestStatus::tryFrom((string) $this->input('status'));
+        $validator->after(function ($validator): void {
+            $serviceRequest = $this->route('service_request');
+            $next = RequestStatus::tryFrom((string) $this->input('status'));
 
-                if (! $serviceRequest instanceof ServiceRequest || ! $next instanceof RequestStatus) {
-                    return;
-                }
+            if (! $serviceRequest instanceof ServiceRequest || ! $next instanceof RequestStatus) {
+                return;
+            }
 
-                if (! $serviceRequest->status->allowsStaffTransitionTo($next)) {
-                    $validator->errors()->add(
-                        'status',
-                        'Payment cannot be confirmed before a quotation is sent.',
-                    );
-                }
-            },
-        ];
+            if ($next === RequestStatus::PaymentConfirmed) {
+                $validator->errors()->add('status', 'Use the confirm payment action instead of manual status change.');
+            }
+
+            if (! $serviceRequest->status->canTransitionTo($next) && $serviceRequest->status !== $next) {
+                $validator->errors()->add(
+                    'status',
+                    "Cannot transition from {$serviceRequest->status->value} to {$next->value}.",
+                );
+            }
+        });
     }
 }

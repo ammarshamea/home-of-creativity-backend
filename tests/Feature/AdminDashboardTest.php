@@ -2,9 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Enums\RequestStatus;
+use App\Jobs\ClassifyWithGeminiJob;
+use App\Models\Client;
 use App\Models\ServiceRequest;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -31,45 +35,89 @@ class AdminDashboardTest extends TestCase
             ->assertJsonPath('data.requests', 0);
     }
 
-    public function test_admin_payment_status_dispatches_n8n(): void
+    public function test_admin_confirm_payment_queues_gemini(): void
     {
-        Http::preventStrayRequests();
-        Http::fake([
-            'https://n8n.test/*' => Http::response(['ok' => true], 200),
-        ]);
-        config(['services.n8n.webhook_url' => 'https://n8n.test/webhook/hoc-events']);
+        Http::fake();
+        Bus::fake([ClassifyWithGeminiJob::class]);
 
         $admin = User::factory()->create();
         $admin->forceFill(['is_admin' => true])->save();
         Sanctum::actingAs($admin);
 
         $serviceRequest = ServiceRequest::factory()->create([
-            'status' => 'quotation_sent',
+            'status' => RequestStatus::AwaitingPayment,
         ]);
 
-        $this->patchJson("/api/admin/requests/{$serviceRequest->id}", [
-            'status' => 'payment_confirmed',
-        ])->assertOk()->assertJsonPath('data.status', 'payment_confirmed');
+        $this->postJson("/api/admin/requests/{$serviceRequest->id}/confirm-payment", [
+            'payment_method' => 'cash',
+        ])->assertOk()
+            ->assertJsonPath('data.gemini_status', 'pending');
 
-        Http::assertSent(fn ($request) => $request['event'] === 'PAYMENT_CONFIRMED'
-            && $request['request_number'] === $serviceRequest->number);
+        $this->assertSame(RequestStatus::AwaitingPayment, $serviceRequest->fresh()->status);
+        Bus::assertDispatched(ClassifyWithGeminiJob::class);
     }
 
-    public function test_admin_cannot_confirm_payment_before_quotation(): void
+    public function test_admin_cannot_confirm_payment_before_quotation_approval(): void
     {
         $admin = User::factory()->create();
         $admin->forceFill(['is_admin' => true])->save();
         Sanctum::actingAs($admin);
 
         $serviceRequest = ServiceRequest::factory()->create([
-            'status' => 'submitted',
+            'status' => RequestStatus::Submitted,
         ]);
+
+        $this->postJson("/api/admin/requests/{$serviceRequest->id}/confirm-payment", [
+            'payment_method' => 'cash',
+        ])->assertUnprocessable();
 
         $this->patchJson("/api/admin/requests/{$serviceRequest->id}", [
             'status' => 'payment_confirmed',
-        ])->assertUnprocessable()
-            ->assertJsonPath('errors.status.0', 'Payment cannot be confirmed before a quotation is sent.');
+        ])->assertUnprocessable();
 
         $this->assertSame('submitted', $serviceRequest->fresh()?->status->value);
+    }
+
+    public function test_admin_requests_are_paginated(): void
+    {
+        $admin = User::factory()->create();
+        $admin->forceFill(['is_admin' => true])->save();
+        Sanctum::actingAs($admin);
+
+        ServiceRequest::factory()->count(21)->create();
+
+        $this->getJson('/api/admin/requests?per_page=20')
+            ->assertOk()
+            ->assertJsonCount(20, 'data')
+            ->assertJsonPath('meta.current_page', 1)
+            ->assertJsonPath('meta.last_page', 2)
+            ->assertJsonPath('meta.total', 21)
+            ->assertJsonPath('meta.per_page', 20);
+
+        $this->getJson('/api/admin/requests?page=2&per_page=20')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('meta.current_page', 2);
+    }
+
+    public function test_admin_clients_are_paginated(): void
+    {
+        $admin = User::factory()->create();
+        $admin->forceFill(['is_admin' => true])->save();
+        Sanctum::actingAs($admin);
+
+        Client::factory()->count(21)->create();
+
+        $this->getJson('/api/admin/clients?per_page=10')
+            ->assertOk()
+            ->assertJsonCount(10, 'data')
+            ->assertJsonPath('meta.current_page', 1)
+            ->assertJsonPath('meta.last_page', 3)
+            ->assertJsonPath('meta.total', 21);
+
+        $this->getJson('/api/admin/clients?page=3&per_page=10')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('meta.current_page', 3);
     }
 }

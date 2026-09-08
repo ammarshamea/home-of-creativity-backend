@@ -1,5 +1,5 @@
-import { NavLink, Navigate, Outlet, Route, Routes } from "react-router-dom";
-import { useState, type ReactNode } from "react";
+import { NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { useEffect, useState, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./auth";
 import { applyLocale, copy, readLocale, type Copy, type Locale } from "./i18n";
 import { Clients } from "./pages/Clients";
@@ -15,20 +15,68 @@ function tFactory(locale: Locale) {
 
 function Shell({ locale, setLocale }: { locale: Locale; setLocale: (next: Locale) => void }) {
   const { user, logout } = useAuth();
+  const location = useLocation();
   const t = tFactory(locale);
+  const [navOpen, setNavOpen] = useState(false);
+
+  useEffect(() => {
+    setNavOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    document.body.style.overflow = navOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [navOpen]);
+
+  useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navOpen]);
 
   if (!user?.is_admin) return <Navigate to="/staff" replace />;
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div className={navOpen ? "app-shell nav-open" : "app-shell"}>
+      <header className="mobile-bar">
+        <p className="brand">
+          HOME <span>of</span> CREATIVITY
+        </p>
+        <button
+          type="button"
+          className="nav-toggle"
+          aria-expanded={navOpen}
+          aria-controls="dash-nav"
+          aria-label={navOpen ? t(copy.closeMenu) : t(copy.menu)}
+          onClick={() => setNavOpen((open) => !open)}
+        >
+          <span aria-hidden="true" className={navOpen ? "nav-toggle-bars is-open" : "nav-toggle-bars"}>
+            <span />
+            <span />
+          </span>
+        </button>
+      </header>
+      <button
+        type="button"
+        className="nav-backdrop"
+        tabIndex={navOpen ? 0 : -1}
+        aria-hidden={!navOpen}
+        aria-label={t(copy.closeMenu)}
+        onClick={() => setNavOpen(false)}
+      />
+      <aside id="dash-nav" className={navOpen ? "sidebar is-open" : "sidebar"}>
         <div>
           <p className="brand">
             HOME <span>of</span> CREATIVITY
           </p>
           <p className="brand-mark">{t(copy.brandMark)}</p>
         </div>
-        <nav className="nav-links" aria-label={t(copy.overview)}>
+        <nav className="nav-links" aria-label={t(copy.menu)}>
           <NavLink to="/" end>
             {t(copy.overview)}
           </NavLink>

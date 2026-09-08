@@ -3,444 +3,165 @@
   "active": false,
   "nodes": [
     {
-      "id": "note-start",
-      "name": "How to connect",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [80, 40],
-      "parameters": {
-        "width": 520,
-        "height": 320,
-        "color": 4,
-        "content": "## Home of Creativity → Laravel\n\n1. Publish this workflow so the production webhook is live.\n2. Point Laravel `N8N_WEBHOOK_URL` at:\n   `http://127.0.0.1:5678/webhook/hoc-events`\n3. Match `HOC_N8N_SECRET` / `N8N_WEBHOOK_SECRET` (`change-me` locally).\n4. Optional n8n env: `HOC_API_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_STAFF_CHAT_ID`.\n\nIf n8n runs in Docker, set `HOC_API_URL=http://host.docker.internal:8000`.\n\nThe webhook answers immediately so `php artisan serve` does not deadlock when n8n calls Laravel back."
-      }
-    },
-    {
-      "id": "webhook-laravel",
+      "id": "webhook",
       "name": "Laravel Event",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [200, 440],
+      "position": [200, 300],
       "webhookId": "hoc-events",
       "parameters": {
         "httpMethod": "POST",
         "path": "hoc-events",
-        "responseMode": "onReceived",
-        "options": {}
+        "responseMode": "onReceived"
       }
     },
     {
-      "id": "normalize-event",
+      "id": "normalize",
       "name": "Normalize Event",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 440],
+      "position": [420, 300],
       "parameters": {
-        "jsCode": "const raw = $input.first().json;\nconst headers = raw.headers || {};\nconst body = (raw.body && typeof raw.body === 'object' && !Array.isArray(raw.body))\n  ? raw.body\n  : raw;\n\nconst provided = String(\n  headers['x-n8n-secret'] ||\n  headers['X-N8N-Secret'] ||\n  headers['x-webhook-secret'] ||\n  ''\n).trim();\nconst expected = String($env.HOC_N8N_SECRET || 'change-me');\n\nif (provided && provided !== expected) {\n  throw new Error('Invalid webhook secret');\n}\n\nconst event = String(body.event || '').trim();\nconst requestNumber = String(body.request_number || '').trim();\nif (!event || !requestNumber) {\n  throw new Error('event and request_number are required');\n}\n\nconst incoming = (body.payload && typeof body.payload === 'object') ? body.payload : {};\nconst title = String(incoming.title || '');\nconst description = String(incoming.description || '');\nconst text = `${title} ${description}`.toLowerCase();\n\nconst departments = [];\nconst rules = [\n  { department: 'branding', pattern: /logo|identity|brand|هوية|شعار|هوية بصرية/ },\n  { department: '3d_visualization', pattern: /booth|exhibition|3d|جناح|معرض|مجسم/ },\n  { department: 'media', pattern: /social|ads|campaign|tiktok|meta|سوشيال|إعلان|حملة/ },\n  { department: 'web', pattern: /web|site|dashboard|موقع|لوحة/ },\n  { department: 'print', pattern: /packaging|menu|card|طباعة|تغليف|منيو/ },\n];\nfor (const rule of rules) {\n  if (rule.pattern.test(text)) {\n    departments.push(rule.department);\n  }\n}\nif (departments.length === 0) {\n  departments.push('creative_direction');\n}\n\nconst client = incoming.client && typeof incoming.client === 'object' ? incoming.client : {};\n\nreturn [{\n  json: {\n    event,\n    request_number: requestNumber,\n    status: body.status || null,\n    title,\n    description,\n    client,\n    incoming_payload: incoming,\n    ai_analysis: {\n      summary: title ? `Intake analysis for ${title}` : `Intake analysis for ${requestNumber}`,\n      departments,\n      estimated_days: 10 + departments.length * 3,\n      confidence: 'heuristic',\n    },\n    quotation: {\n      odoo_quotation_id: `Q-${requestNumber}`,\n      odoo_partner_id: client.odoo_partner_id || `P-${requestNumber}`,\n    },\n    briefs: departments.map((department) => ({\n      department,\n      brief: `${title}: ${description}`.slice(0, 400),\n      clickup_task_id: `CU-MOCK-${department}-${requestNumber}`,\n    })),\n    notify_staff: true,\n    api_url: String($env.HOC_API_URL || 'http://127.0.0.1:8000').replace(/\\/$/, ''),\n    callback_secret: String($env.HOC_N8N_SECRET || 'change-me'),\n  },\n}];"
+        "jsCode": "const raw = $input.first().json;\nconst body = raw.body && typeof raw.body === 'object' ? raw.body : raw;\nreturn [{ json: {\n  event: String(body.event || ''),\n  event_uuid: String(body.event_uuid || ''),\n  request_number: String(body.request_number || ''),\n  request_uuid: String(body.request_uuid || body.payload?.uuid || ''),\n  payload: body.payload || {},\n  api_url: String($env.HOC_API_URL || 'http://127.0.0.1:8000').replace(/\\/$/, ''),\n  secret: String($env.HOC_N8N_SECRET || 'change-me')\n}}];"
       }
     },
     {
-      "id": "is-submitted",
-      "name": "Is Submitted?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [680, 440],
+      "id": "router",
+      "name": "Event Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [640, 300],
       "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "cond-submitted",
-              "leftValue": "={{ $json.event }}",
-              "rightValue": "REQUEST_SUBMITTED",
-              "operator": {
-                "type": "string",
-                "operation": "equals",
-                "name": "filter.operator.equals"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      }
-    },
-    {
-      "id": "mark-analyzing",
-      "name": "Mark Analyzing",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [960, 220],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $('Normalize Event').item.json.api_url }}/api/webhooks/n8n",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/json"
-            },
-            {
-              "name": "X-N8N-Secret",
-              "value": "={{ $('Normalize Event').item.json.callback_secret }}"
-            }
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.event }}", "rightValue": "REQUEST_SUBMITTED", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.event }}", "rightValue": "PAYMENT_CONFIRMED", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.event }}", "rightValue": "REVISION_REQUESTED", "operator": { "type": "string", "operation": "equals" } }] } }
           ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { event: 'REQUEST_SUBMITTED', request_number: $('Normalize Event').item.json.request_number, payload: { ai_analysis: $('Normalize Event').item.json.ai_analysis } } }}",
-        "options": {
-          "timeout": 12000
         }
       }
     },
     {
-      "id": "send-quotation",
-      "name": "Send Quotation",
+      "id": "sales-clickup",
+      "name": "ClickUp Sales Intake",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1200, 220],
+      "position": [900, 120],
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Normalize Event').item.json.api_url }}/api/webhooks/n8n",
+        "url": "https://api.clickup.com/api/v2/list/{{ $env.CLICKUP_LIST_ID }}/task",
         "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/json"
-            },
-            {
-              "name": "X-N8N-Secret",
-              "value": "={{ $('Normalize Event').item.json.callback_secret }}"
-            }
-          ]
-        },
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ $env.CLICKUP_TOKEN }}" }] },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { event: 'QUOTATION_READY', request_number: $('Normalize Event').item.json.request_number, payload: $('Normalize Event').item.json.quotation } }}",
-        "options": {
-          "timeout": 12000
-        }
+        "jsonBody": "={{ { name: `[Sales] ${$json.request_number} ${$json.payload.title || ''}`.trim(), description: $json.payload.description || '' } }}"
       }
     },
     {
-      "id": "should-notify",
-      "name": "Should Notify?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [1440, 220],
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "cond-notify",
-              "leftValue": "={{ $('Normalize Event').item.json.notify_staff }}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "equals"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      }
-    },
-    {
-      "id": "notify-staff",
-      "name": "🔔 Notify Laravel",
+      "id": "sales-map",
+      "name": "Save Sales Mapping",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1680, 80],
-      "onError": "continueRegularOutput",
+      "position": [1120, 120],
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Normalize Event').item.json.api_url }}/api/integrations/telegram/notify",
+        "url": "={{ $json.api_url }}/api/integrations/clickup/mapping",
         "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/json"
-            },
-            {
-              "name": "X-N8N-Secret",
-              "value": "={{ $('Normalize Event').item.json.callback_secret }}"
-            }
-          ]
-        },
+        "headerParameters": { "parameters": [{ "name": "X-N8N-Secret", "value": "={{ $json.secret }}" }] },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { request_number: $('Normalize Event').item.json.request_number, text: 'HOC ' + $('Normalize Event').item.json.request_number + ' — quotation ready: ' + $('Normalize Event').item.json.title } }}",
-        "options": {
-          "timeout": 12000
-        }
+        "jsonBody": "={{ {\n  request_number: $('Normalize Event').item.json.request_number,\n  event_uuid: $('Normalize Event').item.json.event_uuid,\n  request_uuid: $('Normalize Event').item.json.request_uuid,\n  task_type: 'sales',\n  integration_key: `${$('Normalize Event').item.json.request_uuid}:0:sales`,\n  clickup_task_id: String($json.id || $json.data?.id || 'CU-SALES'),\n  clickup_url: $json.url || null,\n  status: $json.status?.status || 'open'\n} }}"
       }
     },
     {
-      "id": "skip-notify",
-      "name": "Skip Notify",
-      "type": "n8n-nodes-base.noOp",
-      "typeVersion": 1,
-      "position": [1680, 320]
-    },
-    {
-      "id": "is-payment",
-      "name": "Is Payment?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [960, 520],
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "cond-payment",
-              "leftValue": "={{ $json.event }}",
-              "rightValue": "PAYMENT_CONFIRMED",
-              "operator": {
-                "type": "string",
-                "operation": "equals",
-                "name": "filter.operator.equals"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      }
-    },
-    {
-      "id": "mark-paid",
-      "name": "Mark Paid",
+      "id": "exec-clickup",
+      "name": "ClickUp Execution Tasks",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1200, 440],
+      "position": [900, 300],
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Normalize Event').item.json.api_url }}/api/webhooks/n8n",
+        "url": "={{ $json.api_url }}/api/integrations/clickup/tasks",
         "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/json"
-            },
-            {
-              "name": "X-N8N-Secret",
-              "value": "={{ $('Normalize Event').item.json.callback_secret }}"
-            }
-          ]
-        },
+        "headerParameters": { "parameters": [{ "name": "X-N8N-Secret", "value": "={{ $json.secret }}" }] },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { event: 'PAYMENT_CONFIRMED', request_number: $('Normalize Event').item.json.request_number, payload: $('Normalize Event').item.json.incoming_payload } }}",
-        "options": {
-          "timeout": 12000
-        }
+        "jsonBody": "={{ {\n  request_number: $json.request_number,\n  briefs: ($json.payload.briefs || []).map((brief) => ({\n    department: brief.type || brief.department,\n    brief: brief.brief || ''\n  }))\n} }}"
       }
     },
     {
-      "id": "send-tasks",
-      "name": "Send Tasks",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1440, 440],
+      "id": "exec-map",
+      "name": "Save Execution Mappings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300],
       "parameters": {
-        "method": "POST",
-        "url": "={{ $('Normalize Event').item.json.api_url }}/api/webhooks/n8n",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/json"
-            },
-            {
-              "name": "X-N8N-Secret",
-              "value": "={{ $('Normalize Event').item.json.callback_secret }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { event: 'TASKS_READY', request_number: $('Normalize Event').item.json.request_number, payload: { briefs: $('Normalize Event').item.json.briefs } } }}",
-        "options": {
-          "timeout": 12000
-        }
+        "jsCode": "const root = $('Normalize Event').item.json;\nconst created = $input.first().json.data?.briefs || [];\nreturn created.map((brief, index) => ({\n  json: {\n    api_url: root.api_url,\n    secret: root.secret,\n    request_number: root.request_number,\n    event_uuid: root.event_uuid,\n    request_uuid: root.request_uuid,\n    brief_id: (root.payload.briefs?.[index]?.id) || null,\n    task_type: brief.department,\n    integration_key: `${root.request_uuid}:${(root.payload.briefs?.[index]?.id) || index + 1}:${brief.department}`,\n    clickup_task_id: brief.clickup_task_id,\n    clickup_url: brief.clickup_url || null\n  }\n}));"
       }
     },
     {
-      "id": "forward-event",
-      "name": "Forward Event",
+      "id": "exec-map-http",
+      "name": "POST Execution Mapping",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1200, 680],
+      "position": [1340, 300],
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Normalize Event').item.json.api_url }}/api/webhooks/n8n",
+        "url": "={{ $json.api_url }}/api/integrations/clickup/mapping",
         "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/json"
-            },
-            {
-              "name": "X-N8N-Secret",
-              "value": "={{ $('Normalize Event').item.json.callback_secret }}"
-            }
-          ]
-        },
+        "headerParameters": { "parameters": [{ "name": "X-N8N-Secret", "value": "={{ $json.secret }}" }] },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { event: $('Normalize Event').item.json.event, request_number: $('Normalize Event').item.json.request_number, payload: $('Normalize Event').item.json.incoming_payload } }}",
-        "options": {
-          "timeout": 12000
-        }
+        "jsonBody": "={{ $json }}"
+      }
+    },
+    {
+      "id": "revision-clickup",
+      "name": "ClickUp Revision Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 480],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.clickup.com/api/v2/list/{{ $env.CLICKUP_LIST_ID }}/task",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ $env.CLICKUP_TOKEN }}" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { name: `[Revision] ${$json.request_number}`, description: $json.payload.reason || $json.payload.description || '' } }}"
+      }
+    },
+    {
+      "id": "revision-map",
+      "name": "Save Revision Mapping",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 480],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.api_url }}/api/integrations/clickup/mapping",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "X-N8N-Secret", "value": "={{ $json.secret }}" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  request_number: $('Normalize Event').item.json.request_number,\n  event_uuid: $('Normalize Event').item.json.event_uuid,\n  request_uuid: $('Normalize Event').item.json.request_uuid,\n  task_type: 'revision',\n  integration_key: `${$('Normalize Event').item.json.request_uuid}:0:revision`,\n  clickup_task_id: String($json.id || $json.data?.id || 'CU-REV'),\n  clickup_url: $json.url || null\n} }}"
       }
     }
   ],
   "connections": {
-    "Laravel Event": {
+    "Laravel Event": { "main": [[{ "node": "Normalize Event", "type": "main", "index": 0 }]] },
+    "Normalize Event": { "main": [[{ "node": "Event Router", "type": "main", "index": 0 }]] },
+    "Event Router": {
       "main": [
-        [
-          {
-            "node": "Normalize Event",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "ClickUp Sales Intake", "type": "main", "index": 0 }],
+        [{ "node": "ClickUp Execution Tasks", "type": "main", "index": 0 }],
+        [{ "node": "ClickUp Revision Task", "type": "main", "index": 0 }]
       ]
     },
-    "Normalize Event": {
-      "main": [
-        [
-          {
-            "node": "Is Submitted?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Is Submitted?": {
-      "main": [
-        [
-          {
-            "node": "Mark Analyzing",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Is Payment?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Mark Analyzing": {
-      "main": [
-        [
-          {
-            "node": "Send Quotation",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Quotation": {
-      "main": [
-        [
-          {
-            "node": "Should Notify?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Should Notify?": {
-      "main": [
-        [
-          {
-            "node": "🔔 Notify Laravel",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Skip Notify",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Is Payment?": {
-      "main": [
-        [
-          {
-            "node": "Mark Paid",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Forward Event",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Mark Paid": {
-      "main": [
-        [
-          {
-            "node": "Send Tasks",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    }
+    "ClickUp Sales Intake": { "main": [[{ "node": "Save Sales Mapping", "type": "main", "index": 0 }]] },
+    "ClickUp Execution Tasks": { "main": [[{ "node": "Save Execution Mappings", "type": "main", "index": 0 }]] },
+    "Save Execution Mappings": { "main": [[{ "node": "POST Execution Mapping", "type": "main", "index": 0 }]] },
+    "ClickUp Revision Task": { "main": [[{ "node": "Save Revision Mapping", "type": "main", "index": 0 }]] }
   },
-  "settings": {
-    "executionOrder": "v1"
-  },
-  "meta": {
-    "templateCredsSetupCompleted": true
-  },
-  "pinData": {},
-  "tags": [
-    {
-      "name": "hoc"
-    }
-  ]
+  "settings": { "executionOrder": "v1" }
 }

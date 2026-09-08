@@ -2,10 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\ApplyClickUpMapping;
+use App\Http\Requests\ClickUpMappingRequest;
 use App\Http\Requests\ClickUpTasksRequest;
 use App\Http\Requests\OdooInvoiceRequest;
 use App\Http\Requests\OdooQuotationRequest;
 use App\Http\Requests\TelegramNotifyRequest;
+use App\Http\Resources\ServiceRequestResource;
 use App\Models\ServiceRequest;
 use App\Services\ClickUpClient;
 use App\Services\OdooClient;
@@ -146,6 +149,18 @@ class IntegrationController extends Controller
             ],
             'message' => 'ClickUp tasks created.',
         ]);
+    }
+
+    public function mapping(ClickUpMappingRequest $request, ApplyClickUpMapping $applyClickUpMapping): ServiceRequestResource
+    {
+        $serviceRequest = ServiceRequest::query()
+            ->where('number', $request->validated('request_number'))
+            ->firstOrFail();
+
+        $updated = $applyClickUpMapping->handle($serviceRequest, $request->validated());
+
+        return ServiceRequestResource::make($updated)
+            ->additional(['message' => 'ClickUp mapping saved.']);
     }
 
     public function notify(TelegramNotifyRequest $request, TelegramNotifier $telegram): JsonResponse
