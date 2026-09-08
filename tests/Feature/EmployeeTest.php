@@ -6,6 +6,7 @@ use App\Enums\ClickUpTaskType;
 use App\Enums\EmployeeProfession;
 use App\Enums\ExecutionStatus;
 use App\Enums\RequestStatus;
+use App\Enums\WorkflowEventType;
 use App\Models\ClickUpTask;
 use App\Models\Client;
 use App\Models\Employee;
@@ -643,6 +644,11 @@ class EmployeeTest extends TestCase
                 'notes' => 'first delivery',
             ])->assertOk()
             ->assertJsonPath('data.status', 'ready_for_review');
+
+        $this->assertDatabaseHas('integration_events', [
+            'request_uuid' => $mine->uuid,
+            'event_type' => WorkflowEventType::DeliveryReady->value,
+        ]);
 
         $mine->forceFill(['status' => RequestStatus::RevisionRequested])->save();
         Revision::query()->create([

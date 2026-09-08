@@ -11,7 +11,10 @@ use Illuminate\Support\Facades\DB;
 
 class RecordDelivery
 {
-    public function __construct(private RequestStatusTransitionService $transitions) {}
+    public function __construct(
+        private RequestStatusTransitionService $transitions,
+        private DispatchStatusWorkflow $dispatchStatusWorkflow,
+    ) {}
 
     public function handle(
         ServiceRequest $request,
@@ -29,12 +32,16 @@ class RecordDelivery
                 'telegram_file_id' => $telegramFileId,
             ]);
 
-            return $this->transitions->transition(
+            $updated = $this->transitions->transition(
                 $request,
                 RequestStatus::ReadyForReview,
                 $employee->name,
                 'Delivery submitted.',
             );
+
+            $this->dispatchStatusWorkflow->handle($updated, RequestStatus::ReadyForReview);
+
+            return $updated;
         });
     }
 }
